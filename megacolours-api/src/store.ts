@@ -31,6 +31,16 @@ const seeds: Product[] = [
     pricingMode: 'FIXED', pricePerM2: 0, fixedPrice: 35000, minimumPrice: 0, allowCustomDimensions: false,
     minWidth: 80, maxWidth: 80, minHeight: 180, maxHeight: 180, stock: 20,
     presets: [{ id: 'std', name: 'Estándar', width: 80, height: 180, fixedPrice: 35000, stock: 20, active: true, image: null, description: 'Formato de demostración' }] },
+  { ...base, id: 'cartel-poste', name: 'Cartel para Poste', slug: 'cartel-poste', category: 'Vía pública',
+    description: 'Letreros rígidos y pendones para postes de alumbrado con abrazaderas metálicas.',
+    pricingMode: 'FIXED', pricePerM2: 0, fixedPrice: 22000, minimumPrice: 0, allowCustomDimensions: true,
+    minWidth: 30, maxWidth: 80, minHeight: 60, maxHeight: 150, stock: 50,
+    presets: [
+      { id: 'poste-40-80', name: '40 × 80 cm', width: 40, height: 80, fixedPrice: 18000, stock: 50, active: true, image: null, description: 'Formato estándar para postes' },
+      { id: 'poste-50-100', name: '50 × 100 cm', width: 50, height: 100, fixedPrice: 22000, stock: 50, active: true, image: null, description: 'Alta visibilidad para esquinas' },
+      { id: 'poste-60-120', name: '60 × 120 cm', width: 60, height: 120, fixedPrice: 28000, stock: 50, active: true, image: null, description: 'Impacto vehicular para avenidas' },
+    ],
+    options: [{ id: 'abrazaderas', name: 'Juego de abrazaderas metálicas para poste', price: 3500, active: true }] },
 ];
 
 export class Store {
@@ -54,26 +64,39 @@ export class Store {
   }
   private seed() {
     // Initial demo migration runs once; later edits or deactivations are preserved.
-    if (this.db.prepare('SELECT id FROM migrations WHERE id=?').get('demo-v1')) return;
-    this.db.exec('BEGIN IMMEDIATE');
-    try {
-      for (const product of seeds) {
-        const existing = this.get<Product>('products', product.id);
-        if (!existing) this.insert('products', product);
-        else if (existing.id === 'paloma' && existing.maxWidth === 0 && existing.maxHeight === 0) {
-          this.update('products', { ...existing, minWidth: 80, maxWidth: 80, minHeight: 180, maxHeight: 180 });
-        } else if (existing.id === 'pvc' && existing.presets.length === 0) {
-          this.update('products', { ...existing, presets: pvcPresets });
+    if (!this.db.prepare('SELECT id FROM migrations WHERE id=?').get('demo-v1')) {
+      this.db.exec('BEGIN IMMEDIATE');
+      try {
+        for (const product of seeds) {
+          const existing = this.get<Product>('products', product.id);
+          if (!existing) this.insert('products', product);
+          else if (existing.id === 'paloma' && existing.maxWidth === 0 && existing.maxHeight === 0) {
+            this.update('products', { ...existing, minWidth: 80, maxWidth: 80, minHeight: 180, maxHeight: 180 });
+          } else if (existing.id === 'pvc' && existing.presets.length === 0) {
+            this.update('products', { ...existing, presets: pvcPresets });
+          }
         }
+        const deliveries: DeliveryMethod[] = [
+          { id: 'pickup', name: 'Retiro en local', description: 'Coordina el retiro con el equipo.', price: 0, active: true, requiresAddress: false },
+          { id: 'santiago', name: 'Despacho en Santiago', description: 'Tarifa de demostración; cobertura sujeta a confirmación.', price: 5000, active: true, requiresAddress: true },
+        ];
+        for (const delivery of deliveries) if (!this.get('deliveries', delivery.id)) this.insert('deliveries', delivery);
+        this.db.prepare('INSERT INTO migrations VALUES (?)').run('demo-v1');
+        this.db.exec('COMMIT');
+      } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+    }
+
+    // Migration for v2-poste
+    try {
+      if (!this.db.prepare('SELECT id FROM migrations WHERE id=?').get('v2-poste')) {
+        const existing = this.get<Product>('products', 'cartel-poste');
+        if (!existing) {
+          const poste = seeds.find(s => s.id === 'cartel-poste');
+          if (poste) this.insert('products', poste);
+        }
+        this.db.prepare('INSERT OR IGNORE INTO migrations (id) VALUES (?)').run('v2-poste');
       }
-      const deliveries: DeliveryMethod[] = [
-        { id: 'pickup', name: 'Retiro en local', description: 'Coordina el retiro con el equipo.', price: 0, active: true, requiresAddress: false },
-        { id: 'santiago', name: 'Despacho en Santiago', description: 'Tarifa de demostración; cobertura sujeta a confirmación.', price: 5000, active: true, requiresAddress: true },
-      ];
-      for (const delivery of deliveries) if (!this.get('deliveries', delivery.id)) this.insert('deliveries', delivery);
-      this.db.prepare('INSERT INTO migrations VALUES (?)').run('demo-v1');
-      this.db.exec('COMMIT');
-    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+    } catch {}
   }
   list<T>(table: Table): T[] {
     return (this.db.prepare(`SELECT data FROM ${table} ORDER BY rowid`).all() as DataRow[]).map(row => JSON.parse(row.data) as T);

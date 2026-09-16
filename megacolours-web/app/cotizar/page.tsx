@@ -548,108 +548,103 @@ export default function Quote() {
             )}
           </section>
 
-          {/* STEP 3: MEDIDAS Y RECOMENDACIONES SEGÚN RESOLUCIÓN */}
+          {/* STEP 3: MEDIDAS Y FORMATO */}
           <section className="rounded-2xl border border-[#18244a22] bg-white p-6 md:p-8 shadow-xs">
-            <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
-                <h2 className="display text-2xl font-bold">03 / Medidas y Formato</h2>
+                <h2 className="display text-2xl font-bold">03 / Medidas del Soporte</h2>
                 <p className="mt-1 text-xs text-[#667089]">
-                  Recomendaciones calculadas según los píxeles reales de tu diseño.
+                  Elige una medida sugerida para tu diseño o ajusta dimensiones personalizadas en centímetros.
                 </p>
               </div>
-
-              {/* Mode Switcher */}
-              <div className="flex items-center gap-1 bg-[#18244A10] p-1 rounded-lg text-xs font-bold">
-                <button
-                  type="button"
-                  onClick={() => setSizeMode('presets')}
-                  className={`px-3 py-1.5 rounded-md transition ${
-                    sizeMode === 'presets' ? 'bg-[#18244A] text-white shadow-xs' : 'text-[#18244A]'
-                  }`}
-                >
-                  Medidas Estándar
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setSizeMode('custom')}
-                  disabled={!product?.allowCustomDimensions}
-                  className={`px-3 py-1.5 rounded-md transition ${
-                    sizeMode === 'custom' ? 'bg-[#18244A] text-white shadow-xs' : 'text-[#18244A]'
-                  } disabled:opacity-40`}
-                >
-                  Personalizada (cm)
-                </button>
-              </div>
+              <span className="self-start sm:self-auto font-mono text-xs font-bold text-[#18244A] bg-[#18244A12] px-3.5 py-1.5 rounded-full border border-[#18244A20]">
+                Selección: {width} × {height} cm
+              </span>
             </div>
 
-            {/* Smart Recommendations Bar if image uploaded */}
+            {/* A) Medidas Sugeridas para la imagen subida */}
             {upload && recommendations.length > 0 && (
-              <div className="mt-5 p-4 rounded-xl bg-gradient-to-r from-[#00A9D610] to-[#EF378510] border border-[#00A9D630]">
+              <div className="mt-6">
                 <div className="flex items-center gap-2 mb-3">
-                  <span className="text-sm">💡</span>
+                  <span className="text-sm">✨</span>
                   <span className="text-xs font-bold uppercase tracking-wider text-[#18244A]">
-                    Recomendaciones automáticas para tu imagen ({effectivePx?.width} × {effectivePx?.height} px):
+                    Sugerencias según tu imagen ({effectivePx?.width} × {effectivePx?.height} px):
                   </span>
                 </div>
-                <div className="grid gap-2.5 sm:grid-cols-3">
-                  {recommendations.map((rec, i) => (
-                    <button
-                      type="button"
-                      key={i}
-                      onClick={() => {
-                        setSizeMode('custom')
-                        setPresetId('')
-                        setWidth(rec.w)
-                        setHeight(rec.h)
-                      }}
-                      className="text-left p-3 rounded-lg bg-white border border-[#18244a15] hover:border-[#00A9D6] transition shadow-xs group"
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="text-[11px] font-bold text-[#18244A]">{rec.badge}</span>
-                        <span className="text-[11px] font-mono font-bold text-[#00A9D6] group-hover:underline">
-                          Elegir →
-                        </span>
-                      </div>
-                      <p className="mt-1 font-mono font-bold text-base text-[#18244A]">
-                        {rec.w} × {rec.h} cm
-                      </p>
-                      <p className="text-[11px] text-[#667089] mt-0.5">{rec.desc}</p>
-                    </button>
-                  ))}
+                <div className="grid gap-3 sm:grid-cols-3">
+                  {recommendations.map((rec, i) => {
+                    const isSelected = sizeMode === 'custom' && width === rec.w && height === rec.h
+                    return (
+                      <button
+                        type="button"
+                        key={i}
+                        onClick={() => {
+                          setSizeMode('custom')
+                          setPresetId('')
+                          setWidth(rec.w)
+                          setHeight(rec.h)
+                        }}
+                        className={`text-left p-4 rounded-xl border-2 transition relative flex flex-col justify-between ${
+                          isSelected
+                            ? 'border-[#EF3785] bg-[#EF378510] shadow-sm ring-2 ring-[#EF378522]'
+                            : 'border-[#18244a15] bg-white hover:border-[#00A9D6]'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-bold text-[#18244A]">{rec.badge}</span>
+                          {isSelected && (
+                            <span className="text-[11px] font-bold text-[#EF3785]">✓ Seleccionado</span>
+                          )}
+                        </div>
+                        <p className="mt-2 font-mono font-bold text-xl text-[#18244A]">
+                          {rec.w} × {rec.h} cm
+                        </p>
+                        <p className="text-xs text-[#667089] mt-1">{rec.desc}</p>
+                      </button>
+                    )
+                  })}
                 </div>
               </div>
             )}
 
-            {/* Presets Mode */}
-            {sizeMode === 'presets' && product && (
+            {/* B) Formatos Estándar del Producto */}
+            {product && product.presets.filter((p) => p.active).length > 0 && (
               <div className="mt-6">
                 <p className="text-xs font-bold text-[#667089] mb-3 uppercase tracking-wider">
-                  Formatos estándar de {product.name}:
+                  Formatos estándar de taller ({product.name}):
                 </p>
                 <div className="grid gap-3 sm:grid-cols-3">
                   {product.presets
                     .filter((p) => p.active)
                     .map((p) => {
-                      const isSelected = presetId === p.id
+                      const isSelected = sizeMode === 'presets' && presetId === p.id
                       return (
                         <button
                           type="button"
                           key={p.id}
                           onClick={() => {
+                            setSizeMode('presets')
                             setPresetId(p.id)
                             setWidth(p.width)
                             setHeight(p.height)
                           }}
-                          className={`p-4 rounded-xl border-2 text-left transition ${
+                          className={`p-4 rounded-xl border-2 text-left transition relative flex flex-col justify-between ${
                             isSelected
-                              ? 'border-[#EF3785] bg-[#EF378510] shadow-xs'
-                              : 'border-[#18244a20] bg-white hover:border-[#00A9D6]'
+                              ? 'border-[#EF3785] bg-[#EF378510] shadow-sm ring-2 ring-[#EF378522]'
+                              : 'border-[#18244a15] bg-white hover:border-[#00A9D6]'
                           }`}
                         >
-                          <span className="font-bold text-sm block text-[#18244A]">{p.name}</span>
-                          <span className="mt-1 block font-mono text-xs text-[#667089]">
-                            {p.width} × {p.height} cm
-                          </span>
+                          <div>
+                            <div className="flex items-center justify-between">
+                              <span className="font-bold text-sm text-[#18244A]">{p.name}</span>
+                              {isSelected && (
+                                <span className="text-[11px] font-bold text-[#EF3785]">✓ Activo</span>
+                              )}
+                            </div>
+                            <span className="mt-1 block font-mono text-xs text-[#667089]">
+                              {p.width} × {p.height} cm
+                            </span>
+                          </div>
                           {p.fixedPrice && (
                             <span className="mt-2 block text-xs font-bold text-[#00A9D6]">
                               {clp(p.fixedPrice)}
@@ -662,86 +657,105 @@ export default function Quote() {
               </div>
             )}
 
-            {/* Custom Mode */}
-            {sizeMode === 'custom' && product && (
-              <div className="mt-6 space-y-4">
-                <div className="flex items-center justify-between">
-                  <p className="text-xs font-bold text-[#667089] uppercase tracking-wider">
-                    Dimensiones exactas en centímetros:
-                  </p>
+            {/* C) Ajuste Personalizado en cm */}
+            {product && product.allowCustomDimensions && (
+              <div className="mt-6 border-t border-[#18244a15] pt-6">
+                <div className="flex flex-wrap items-center justify-between gap-3">
                   <button
                     type="button"
-                    onClick={() => setLockAspectRatio(!lockAspectRatio)}
-                    className={`text-xs px-3 py-1 rounded-full border font-medium transition ${
-                      lockAspectRatio
-                        ? 'border-[#00A9D6] bg-[#00A9D615] text-[#00A9D6]'
-                        : 'border-[#18244a25] text-[#667089]'
+                    onClick={() => {
+                      setSizeMode('custom')
+                      setPresetId('')
+                    }}
+                    className={`flex items-center gap-2 text-left px-4 py-2.5 rounded-xl border-2 transition ${
+                      sizeMode === 'custom' && !recommendations.some((r) => r.w === width && r.h === height)
+                        ? 'border-[#00A9D6] bg-[#00A9D610] text-[#18244A] font-bold'
+                        : 'border-[#18244a20] bg-white text-[#667089] hover:border-[#18244A]'
                     }`}
                   >
-                    {lockAspectRatio ? '🔒 Proporción bloqueada' : '🔓 Proporción libre'}
+                    <span>📐</span>
+                    <span className="text-xs">¿Necesitas otra medida exacta? Ajustar centímetros manuales</span>
                   </button>
+
+                  {sizeMode === 'custom' && (
+                    <button
+                      type="button"
+                      onClick={() => setLockAspectRatio(!lockAspectRatio)}
+                      className={`text-xs px-3 py-1.5 rounded-full border font-medium transition ${
+                        lockAspectRatio
+                          ? 'border-[#00A9D6] bg-[#00A9D615] text-[#00A9D6]'
+                          : 'border-[#18244a25] text-[#667089]'
+                      }`}
+                    >
+                      {lockAspectRatio ? '🔒 Proporción bloqueada' : '🔓 Proporción libre'}
+                    </button>
+                  )}
                 </div>
 
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-xs font-bold text-[#18244A]">
-                      Ancho (cm)
-                      <input
-                        type="number"
-                        value={width}
-                        min={product.minWidth}
-                        max={product.maxWidth}
-                        step={product.dimensionStep || 1}
-                        onChange={(e) => handleWidthChange(Math.max(1, +e.target.value))}
-                        className="focus-ring mt-1.5 w-full rounded-lg border border-[#18244a30] bg-white p-3 font-mono font-bold text-lg"
-                      />
-                    </label>
-                    <span className="text-[10px] text-[#667089] mt-1 block">
-                      Min: {product.minWidth} cm · Max: {product.maxWidth} cm
-                    </span>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-[#18244A]">
-                      Alto (cm)
-                      <input
-                        type="number"
-                        value={height}
-                        min={product.minHeight}
-                        max={product.maxHeight}
-                        step={product.dimensionStep || 1}
-                        onChange={(e) => handleHeightChange(Math.max(1, +e.target.value))}
-                        className="focus-ring mt-1.5 w-full rounded-lg border border-[#18244a30] bg-white p-3 font-mono font-bold text-lg"
-                      />
-                    </label>
-                    <span className="text-[10px] text-[#667089] mt-1 block">
-                      Min: {product.minHeight} cm · Max: {product.maxHeight} cm
-                    </span>
-                  </div>
-                </div>
-
-                {/* Real-time DPI Quality Meter */}
-                {currentDpi !== null && (
-                  <div className="mt-4 p-3.5 rounded-xl bg-[#FAFAF7] border border-[#18244a15] flex items-center justify-between">
-                    <div className="flex items-center gap-2.5">
-                      <span className="text-xl">
-                        {currentDpi >= 150 ? '🟢' : currentDpi >= 100 ? '🟡' : currentDpi >= 70 ? '🟠' : '🔴'}
-                      </span>
+                {sizeMode === 'custom' && (
+                  <div className="mt-4 p-5 rounded-xl bg-[#FAFAF7] border border-[#18244a15] space-y-4">
+                    <div className="grid grid-cols-2 gap-4">
                       <div>
-                        <p className="text-xs font-bold text-[#18244A]">
-                          {currentDpi >= 150
-                            ? 'Resolución Óptima de Impresión'
-                            : currentDpi >= 100
-                            ? 'Buena Nitidez de Cartelería'
-                            : currentDpi >= 70
-                            ? 'Resolución Aceptable para Distancia'
-                            : 'Atención: Podría verse pixelado'}
-                        </p>
-                        <p className="text-[11px] text-[#667089]">
-                          Densidad calculada: ~{currentDpi} DPI para {width} × {height} cm
-                        </p>
+                        <label className="block text-xs font-bold text-[#18244A]">
+                          Ancho (cm)
+                          <input
+                            type="number"
+                            value={width}
+                            min={product.minWidth}
+                            max={product.maxWidth}
+                            step={product.dimensionStep || 1}
+                            onChange={(e) => handleWidthChange(Math.max(1, +e.target.value))}
+                            className="focus-ring mt-1.5 w-full rounded-lg border border-[#18244a30] bg-white p-3 font-mono font-bold text-lg"
+                          />
+                        </label>
+                        <span className="text-[10px] text-[#667089] mt-1 block">
+                          Min: {product.minWidth} cm · Max: {product.maxWidth} cm
+                        </span>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-bold text-[#18244A]">
+                          Alto (cm)
+                          <input
+                            type="number"
+                            value={height}
+                            min={product.minHeight}
+                            max={product.maxHeight}
+                            step={product.dimensionStep || 1}
+                            onChange={(e) => handleHeightChange(Math.max(1, +e.target.value))}
+                            className="focus-ring mt-1.5 w-full rounded-lg border border-[#18244a30] bg-white p-3 font-mono font-bold text-lg"
+                          />
+                        </label>
+                        <span className="text-[10px] text-[#667089] mt-1 block">
+                          Min: {product.minHeight} cm · Max: {product.maxHeight} cm
+                        </span>
                       </div>
                     </div>
+
+                    {/* Real-time DPI Quality Meter */}
+                    {currentDpi !== null && (
+                      <div className="p-3 rounded-lg bg-white border border-[#18244a15] flex items-center justify-between">
+                        <div className="flex items-center gap-2.5">
+                          <span className="text-xl">
+                            {currentDpi >= 150 ? '🟢' : currentDpi >= 100 ? '🟡' : currentDpi >= 70 ? '🟠' : '🔴'}
+                          </span>
+                          <div>
+                            <p className="text-xs font-bold text-[#18244A]">
+                              {currentDpi >= 150
+                                ? 'Resolución Óptima de Impresión'
+                                : currentDpi >= 100
+                                ? 'Buena Nitidez de Cartelería'
+                                : currentDpi >= 70
+                                ? 'Resolución Aceptable para Distancia'
+                                : 'Atención: Podría verse pixelado'}
+                            </p>
+                            <p className="text-[11px] text-[#667089]">
+                              Densidad calculada: ~{currentDpi} DPI para {width} × {height} cm
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

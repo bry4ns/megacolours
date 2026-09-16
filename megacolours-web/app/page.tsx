@@ -8,7 +8,8 @@ const samples = [
   ['01', 'Tela PVC', 'Color que aguanta la calle.'],
   ['02', 'Adhesivos', 'Superficies que piden atención.'],
   ['03', 'Palomas', 'Presencia a la altura de tu negocio.'],
-  ['04', 'Impresión digital', 'Una idea, muchas escalas.'],
+  ['04', 'Carteles de Poste', 'Publicidad en postes y esquinas con abrazaderas metálicas.'],
+  ['05', 'Impresión digital', 'Una idea, muchas escalas.'],
 ]
 
 const realWorks = [

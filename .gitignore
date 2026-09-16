@@ -1,0 +1,10 @@
+node_modules/
+.next/
+dist/
+data/
+sources/
+scratch/
+temp*
+.env
+.env*.local
+test-results/

@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  api:
+    build:
+      context: ./megacolours-api
+      dockerfile: Dockerfile
+    restart: always
+    environment:
+      - NODE_ENV=production
+      - HOST=0.0.0.0
+      - PORT=4000
+      - DATABASE_PATH=/app/data/megacolours.sqlite
+      - UPLOAD_DIR=/app/data/uploads
+      - ADMIN_EMAIL=${ADMIN_EMAIL:-admin@biorvi.cl}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-AdminMega2026!}
+      - SESSION_SECRET=${SESSION_SECRET:-megacolours-production-session-secret-key-32-chars}
+      - WEB_ORIGIN=https://mcrs.biorvi.cl
+    volumes:
+      - megacolours_data:/app/data
+    networks:
+      - megacolours_net
+
+  web:
+    build:
+      context: ./megacolours-web
+      dockerfile: Dockerfile
+    restart: always
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - HOSTNAME=0.0.0.0
+      - API_ORIGIN=http://api:4000
+    depends_on:
+      - api
+    networks:
+      - megacolours_net
+
+volumes:
+  megacolours_data:
+    driver: local
+
+networks:
+  megacolours_net:
+    driver: bridge

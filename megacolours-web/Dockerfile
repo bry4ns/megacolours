@@ -16,6 +16,7 @@ ENV API_ORIGIN=http://megacolours-api:4000
 ENV NEXT_TELEMETRY_DISABLED=1
 
 COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/public ./public
 COPY --from=builder /app/.next/static ./.next/static
 
 EXPOSE 3000

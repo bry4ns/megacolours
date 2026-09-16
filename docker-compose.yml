@@ -1,7 +1,7 @@
 version: '3.8'
 
 services:
-  api:
+  megacolours-api:
     build:
       context: ./megacolours-api
       dockerfile: Dockerfile
@@ -30,9 +30,9 @@ services:
       - NODE_ENV=production
       - PORT=3000
       - HOSTNAME=0.0.0.0
-      - API_ORIGIN=http://api:4000
+      - API_ORIGIN=http://megacolours-api:4000
     depends_on:
-      - api
+      - megacolours-api
     networks:
       - megacolours_net
 

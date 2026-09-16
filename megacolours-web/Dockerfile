@@ -4,7 +4,7 @@ COPY package*.json ./
 RUN npm ci
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
-ENV API_ORIGIN=http://api:4000
+ENV API_ORIGIN=http://megacolours-api:4000
 RUN npm run build
 
 FROM node:24-slim AS runner
@@ -12,7 +12,7 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
-ENV API_ORIGIN=http://api:4000
+ENV API_ORIGIN=http://megacolours-api:4000
 ENV NEXT_TELEMETRY_DISABLED=1
 
 COPY --from=builder /app/.next/standalone ./

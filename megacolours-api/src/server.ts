@@ -183,8 +183,13 @@ export function buildApp() {
 
 if (process.env.NODE_ENV !== 'test') {
   const app = buildApp();
-  app.listen({ port: Number(process.env.PORT || 4000), host: process.env.HOST || '127.0.0.1' }).catch(error => {
-    console.error(error); process.exitCode = 1;
+  const port = Number(process.env.PORT || 4000);
+  const host = process.env.HOST || '0.0.0.0';
+  app.listen({ port, host }).then((address) => {
+    console.log(`MegaColours API listening on ${address}`);
+  }).catch(error => {
+    console.error('Failed to start MegaColours API:', error);
+    process.exitCode = 1;
   });
   for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => { void app.close(); });
 }

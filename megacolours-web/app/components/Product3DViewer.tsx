@@ -1,5 +1,7 @@
 'use client'
+
 import React, { useState, useRef, useEffect, useCallback } from 'react'
+import * as THREE from 'three'
 
 interface Product3DViewerProps {
   imageUrl?: string | null
@@ -19,12 +21,13 @@ export function Product3DViewer({
   crop = { x: 0.5, y: 0.5, zoom: 1 },
   title,
 }: Product3DViewerProps) {
-  const [rotY, setRotY] = useState(22)
-  const [rotX, setRotX] = useState(-8)
-  const [autoRotate, setAutoRotate] = useState(false)
+  const containerRef = useRef<HTMLDivElement>(null)
   const [showEnvironment, setShowEnvironment] = useState(true)
+  const [autoRotate, setAutoRotate] = useState(false)
   const [activeSupport, setActiveSupport] = useState<'paloma' | 'poste' | 'pvc' | 'panel'>('paloma')
+  const [activePresetView, setActivePresetView] = useState<'persp' | 'front' | 'side'>('persp')
 
+  // Sync active support when productType prop changes
   useEffect(() => {
     if (productType === 'paloma') setActiveSupport('paloma')
     else if (productType === 'cartel-poste') setActiveSupport('poste')
@@ -32,69 +35,756 @@ export function Product3DViewer({
     else setActiveSupport('panel')
   }, [productType])
 
-  const dragging = useRef(false)
-  const lastPos = useRef({ x: 0, y: 0 })
-  const animFrame = useRef<number | null>(null)
+  // Camera Orbit state (refs for smooth 60fps animation loop)
+  const azimuthRef = useRef(0.45) // ~26 degrees
+  const elevationRef = useRef(0.18) // ~10 degrees
+  const distanceRef = useRef(3.8) // meters
+  const targetLookAtRef = useRef(new THREE.Vector3(0, 1.05, 0))
+  const isDraggingRef = useRef(false)
+  const pointerPosRef = useRef({ x: 0, y: 0 })
+  const autoRotateRef = useRef(autoRotate)
+  autoRotateRef.current = autoRotate
 
-  // Auto rotation loop
+  // Three.js object references for dynamic updates
+  const sceneRef = useRef<THREE.Scene | null>(null)
+  const cameraRef = useRef<THREE.PerspectiveCamera | null>(null)
+  const rendererRef = useRef<THREE.WebGLRenderer | null>(null)
+  const envGroupRef = useRef<THREE.Group | null>(null)
+  const signGroupRef = useRef<THREE.Group | null>(null)
+  const canvasTexRef = useRef<THREE.CanvasTexture | null>(null)
+  const offscreenCanvasRef = useRef<HTMLCanvasElement | null>(null)
+
+  // -------------------------------------------------------------
+  // Dynamic Texture Generation (Offscreen Canvas -> THREE.CanvasTexture)
+  // -------------------------------------------------------------
+  const renderTextureToCanvas = useCallback(() => {
+    if (!offscreenCanvasRef.current || !canvasTexRef.current) return
+    const canvas = offscreenCanvasRef.current
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+
+    const W = canvas.width
+    const H = canvas.height
+
+    if (imageUrl) {
+      const img = new Image()
+      img.crossOrigin = 'anonymous'
+      img.onload = () => {
+        ctx.fillStyle = '#18244A'
+        ctx.fillRect(0, 0, W, H)
+
+        // Apply user crop & zoom
+        const zoom = Math.max(0.2, crop.zoom || 1)
+        const cx = crop.x ?? 0.5
+        const cy = crop.y ?? 0.5
+
+        const srcW = img.naturalWidth / zoom
+        const srcH = img.naturalHeight / zoom
+        const srcX = cx * img.naturalWidth - srcW / 2
+        const srcY = cy * img.naturalHeight - srcH / 2
+
+        ctx.drawImage(img, srcX, srcY, srcW, srcH, 0, 0, W, H)
+        if (canvasTexRef.current) {
+          canvasTexRef.current.needsUpdate = true
+        }
+      }
+      img.src = imageUrl
+    } else {
+      // Modern MegaColours Branded Placeholder Graphic
+      const grad = ctx.createLinearGradient(0, 0, W, H)
+      grad.addColorStop(0, '#121B38')
+      grad.addColorStop(0.5, '#18244A')
+      grad.addColorStop(1, '#253565')
+      ctx.fillStyle = grad
+      ctx.fillRect(0, 0, W, H)
+
+      // Accent color lines
+      ctx.fillStyle = '#00A9D6'
+      ctx.fillRect(40, 40, W - 80, 8)
+      ctx.fillStyle = '#EF3785'
+      ctx.fillRect(40, H - 48, W - 80, 8)
+
+      // Corner geometric accents
+      ctx.strokeStyle = '#FFFFFF15'
+      ctx.lineWidth = 2
+      ctx.strokeRect(40, 40, W - 80, H - 80)
+
+      // Text Branding
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+
+      ctx.fillStyle = '#00A9D6'
+      ctx.font = 'bold 36px sans-serif'
+      ctx.fillText('MEGACOLOURS', W / 2, H / 2 - 80)
+
+      ctx.fillStyle = '#FFFFFF'
+      ctx.font = 'bold 22px sans-serif'
+      ctx.fillText('IMPRESIÓN DIGITAL EN ALTA CALIDAD', W / 2, H / 2 - 35)
+
+      // Dimension pill
+      ctx.fillStyle = '#FFFFFF18'
+      const pillW = 280
+      const pillH = 46
+      ctx.beginPath()
+      ctx.roundRect(W / 2 - pillW / 2, H / 2 + 10, pillW, pillH, 23)
+      ctx.fill()
+      ctx.strokeStyle = '#FFFFFF35'
+      ctx.stroke()
+
+      ctx.fillStyle = '#FFFFFF'
+      ctx.font = 'bold 20px monospace'
+      ctx.fillText(`${widthCm} × ${heightCm} cm`, W / 2, H / 2 + 33)
+
+      ctx.fillStyle = '#94A3B8'
+      ctx.font = '16px sans-serif'
+      ctx.fillText('Sube tu imagen para previsualizar aquí', W / 2, H / 2 + 90)
+
+      canvasTexRef.current.needsUpdate = true
+    }
+  }, [imageUrl, crop.x, crop.y, crop.zoom, widthCm, heightCm])
+
+  // Update texture whenever image or crop changes
   useEffect(() => {
-    if (!autoRotate) return
-    let lastTime = performance.now()
-    const loop = (time: number) => {
-      const delta = (time - lastTime) / 1000
-      lastTime = time
-      setRotY((y) => (y + delta * 18) % 360)
-      animFrame.current = requestAnimationFrame(loop)
-    }
-    animFrame.current = requestAnimationFrame(loop)
-    return () => {
-      if (animFrame.current) cancelAnimationFrame(animFrame.current)
-    }
-  }, [autoRotate])
+    renderTextureToCanvas()
+  }, [renderTextureToCanvas])
 
-  const onPointerDown = (e: React.PointerEvent) => {
-    dragging.current = true
-    lastPos.current = { x: e.clientX, y: e.clientY }
+  // Toggle environment visibility
+  useEffect(() => {
+    if (envGroupRef.current) {
+      envGroupRef.current.visible = showEnvironment
+    }
+  }, [showEnvironment])
+
+  // -------------------------------------------------------------
+  // Rebuild 3D Model when activeSupport, widthCm, or heightCm changes
+  // -------------------------------------------------------------
+  useEffect(() => {
+    const signGroup = signGroupRef.current
+    if (!signGroup || !canvasTexRef.current) return
+
+    // Clear previous models
+    while (signGroup.children.length > 0) {
+      const obj = signGroup.children[0]
+      signGroup.remove(obj)
+      if ((obj as THREE.Mesh).geometry) (obj as THREE.Mesh).geometry.dispose()
+    }
+
+    const wMeters = Math.max(0.2, (widthCm || 80) / 100)
+    const hMeters = Math.max(0.2, (heightCm || 180) / 100)
+    const texture = canvasTexRef.current
+
+    // Common Materials
+    const printFrontMat = new THREE.MeshStandardMaterial({
+      map: texture,
+      roughness: 0.35,
+      metalness: 0.05,
+    })
+
+    const printBackMat = new THREE.MeshStandardMaterial({
+      map: texture,
+      roughness: 0.35,
+      metalness: 0.05,
+    })
+
+    const darkAluminumMat = new THREE.MeshStandardMaterial({
+      color: 0x1e293b,
+      roughness: 0.4,
+      metalness: 0.7,
+    })
+
+    const brassHingeMat = new THREE.MeshStandardMaterial({
+      color: 0xd4af37,
+      roughness: 0.3,
+      metalness: 0.85,
+    })
+
+    const steelMat = new THREE.MeshStandardMaterial({
+      color: 0x94a3b8,
+      roughness: 0.3,
+      metalness: 0.8,
+    })
+
+    const rubberFootMat = new THREE.MeshStandardMaterial({
+      color: 0x0f172a,
+      roughness: 0.9,
+      metalness: 0.1,
+    })
+
+    // =========================================================================
+    // 1. PALOMA CABALLETE (True A-Frame Geometry: Touching at top apex, NO 'X')
+    // =========================================================================
+    if (activeSupport === 'paloma') {
+      const legExtra = 0.14 // 14 cm foot extension below print
+      const totalBoardLen = hMeters + legExtra
+      const halfAngle = 0.19 // ~11 degrees slant each way
+      const apexY = totalBoardLen * Math.cos(halfAngle)
+      const frameThick = 0.032
+      const profileW = 0.035
+
+      targetLookAtRef.current.set(0, apexY * 0.55, 0)
+
+      // Top Hinge Axis Cylinder at the apex
+      const hingeAxisGeom = new THREE.CylinderGeometry(0.016, 0.016, wMeters + 0.02, 16)
+      hingeAxisGeom.rotateZ(Math.PI / 2)
+      const hingeAxisMesh = new THREE.Mesh(hingeAxisGeom, brassHingeMat)
+      hingeAxisMesh.position.set(0, apexY, 0)
+      hingeAxisMesh.castShadow = true
+      signGroup.add(hingeAxisMesh)
+
+      // Decorative hinge caps
+      for (const offset of [-wMeters * 0.35, wMeters * 0.35]) {
+        const capGeom = new THREE.CylinderGeometry(0.024, 0.024, 0.04, 16)
+        capGeom.rotateZ(Math.PI / 2)
+        const capMesh = new THREE.Mesh(capGeom, brassHingeMat)
+        capMesh.position.set(offset, apexY, 0)
+        signGroup.add(capMesh)
+      }
+
+      // Builder for one board side pivoting from apex
+      const createBoard = (angleSign: number, isFront: boolean) => {
+        const pivot = new THREE.Group()
+        pivot.position.set(0, apexY, 0)
+        pivot.rotation.x = angleSign * halfAngle
+
+        const boardSubGroup = new THREE.Group()
+        // Shift board down along its angled local Y-axis
+        boardSubGroup.position.set(0, -totalBoardLen / 2, 0)
+
+        // Outer Structural Frame (Top, Bottom, Left, Right struts)
+        // Left Leg
+        const leftLegGeom = new THREE.BoxGeometry(profileW, totalBoardLen, frameThick)
+        const leftLeg = new THREE.Mesh(leftLegGeom, darkAluminumMat)
+        leftLeg.position.set(-wMeters / 2 + profileW / 2, 0, 0)
+        leftLeg.castShadow = true
+        boardSubGroup.add(leftLeg)
+
+        // Right Leg
+        const rightLegGeom = new THREE.BoxGeometry(profileW, totalBoardLen, frameThick)
+        const rightLeg = new THREE.Mesh(rightLegGeom, darkAluminumMat)
+        rightLeg.position.set(wMeters / 2 - profileW / 2, 0, 0)
+        rightLeg.castShadow = true
+        boardSubGroup.add(rightLeg)
+
+        // Top Frame Rail
+        const topRailGeom = new THREE.BoxGeometry(wMeters - profileW * 2, profileW, frameThick)
+        const topRail = new THREE.Mesh(topRailGeom, darkAluminumMat)
+        topRail.position.set(0, totalBoardLen / 2 - profileW / 2, 0)
+        boardSubGroup.add(topRail)
+
+        // Mid/Bottom Frame Rail (above feet)
+        const midRailGeom = new THREE.BoxGeometry(wMeters - profileW * 2, profileW, frameThick)
+        const midRail = new THREE.Mesh(midRailGeom, darkAluminumMat)
+        midRail.position.set(0, -totalBoardLen / 2 + legExtra + profileW / 2, 0)
+        boardSubGroup.add(midRail)
+
+        // Printed Panel (Facing outwards)
+        const panelW = wMeters - profileW * 2
+        const panelH = hMeters - profileW
+        const panelGeom = new THREE.BoxGeometry(panelW, panelH, 0.008)
+
+        // Panel materials: outer face has texture, others dark aluminum
+        const mat = isFront ? printFrontMat : printBackMat
+        const panelMaterials = [
+          darkAluminumMat,
+          darkAluminumMat,
+          darkAluminumMat,
+          darkAluminumMat,
+          angleSign < 0 ? mat : darkAluminumMat, // +Z face
+          angleSign > 0 ? mat : darkAluminumMat, // -Z face
+        ]
+        const panelMesh = new THREE.Mesh(panelGeom, panelMaterials)
+        panelMesh.position.set(0, legExtra / 2, angleSign < 0 ? frameThick * 0.35 : -frameThick * 0.35)
+        panelMesh.castShadow = true
+        boardSubGroup.add(panelMesh)
+
+        // Rubber Foot Pads at bottom
+        for (const legX of [-wMeters / 2 + profileW / 2, wMeters / 2 - profileW / 2]) {
+          const footGeom = new THREE.BoxGeometry(profileW * 1.2, 0.02, frameThick * 1.3)
+          const footMesh = new THREE.Mesh(footGeom, rubberFootMat)
+          footMesh.position.set(legX, -totalBoardLen / 2 + 0.01, 0)
+          boardSubGroup.add(footMesh)
+        }
+
+        pivot.add(boardSubGroup)
+        return pivot
+      }
+
+      // Front Face ( Cara A ) - angled slightly forward
+      signGroup.add(createBoard(-1, true))
+      // Back Face ( Cara B ) - angled slightly backward
+      signGroup.add(createBoard(1, false))
+
+      // Bottom Safety Spreader Bars (Chicotes/Cadenas de sujeción)
+      const spreaderY = 0.28
+      const spreaderZSpan = (apexY - spreaderY) * Math.tan(halfAngle) * 2
+      for (const spreaderX of [-wMeters * 0.4, wMeters * 0.4]) {
+        const spreaderGeom = new THREE.CylinderGeometry(0.004, 0.004, spreaderZSpan, 8)
+        spreaderGeom.rotateX(Math.PI / 2)
+        const spreaderMesh = new THREE.Mesh(spreaderGeom, steelMat)
+        spreaderMesh.position.set(spreaderX, spreaderY, 0)
+        signGroup.add(spreaderMesh)
+      }
+    }
+
+    // =========================================================================
+    // 2. CARTEL PARA POSTE (Urban Post Mount with Steel Clamp Rings & Arms)
+    // =========================================================================
+    else if (activeSupport === 'poste') {
+      const poleHeight = 4.2
+      const poleRadius = 0.08
+      const poleX = -(wMeters / 2 + 0.18)
+      const signCenterY = 2.2 // Mount at ~2.2m above sidewalk
+      targetLookAtRef.current.set(0, signCenterY, 0)
+
+      // Concrete / Steel Street Pole
+      const poleGeom = new THREE.CylinderGeometry(poleRadius * 0.9, poleRadius, poleHeight, 24)
+      const poleMesh = new THREE.Mesh(poleGeom, steelMat)
+      poleMesh.position.set(poleX, poleHeight / 2, 0)
+      poleMesh.castShadow = true
+      poleMesh.receiveShadow = true
+      signGroup.add(poleMesh)
+
+      // Post Concrete Base Footing
+      const baseGeom = new THREE.CylinderGeometry(poleRadius * 2, poleRadius * 2.2, 0.25, 24)
+      const concreteBaseMat = new THREE.MeshStandardMaterial({
+        color: 0x9ca3af,
+        roughness: 0.9,
+      })
+      const baseMesh = new THREE.Mesh(baseGeom, concreteBaseMat)
+      baseMesh.position.set(poleX, 0.125, 0)
+      baseMesh.receiveShadow = true
+      signGroup.add(baseMesh)
+
+      // Mounting Clamps (Collarines/Abrazaderas) & Horizontal Cantilever Arms
+      const armYs = [signCenterY + hMeters * 0.38, signCenterY - hMeters * 0.38]
+      for (const armY of armYs) {
+        // Clamp ring encircling pole
+        const clampGeom = new THREE.TorusGeometry(poleRadius + 0.012, 0.018, 12, 32)
+        clampGeom.rotateX(Math.PI / 2)
+        const clampMesh = new THREE.Mesh(clampGeom, darkAluminumMat)
+        clampMesh.position.set(poleX, armY, 0)
+        signGroup.add(clampMesh)
+
+        // Horizontal steel arm connecting clamp to sign frame
+        const armLength = Math.abs(poleX) + wMeters / 2 + 0.03
+        const armGeom = new THREE.CylinderGeometry(0.02, 0.02, armLength, 16)
+        armGeom.rotateZ(Math.PI / 2)
+        const armMesh = new THREE.Mesh(armGeom, steelMat)
+        armMesh.position.set(poleX + armLength / 2, armY, 0)
+        armMesh.castShadow = true
+        signGroup.add(armMesh)
+      }
+
+      // The Double-Sided Sign Board
+      const boardGroup = new THREE.Group()
+      boardGroup.position.set(0, signCenterY, 0)
+
+      // Aluminum border frame
+      const frameGeom = new THREE.BoxGeometry(wMeters + 0.04, hMeters + 0.04, 0.04)
+      const frameMesh = new THREE.Mesh(frameGeom, darkAluminumMat)
+      frameMesh.castShadow = true
+      boardGroup.add(frameMesh)
+
+      // Front Printed Surface
+      const frontPanelGeom = new THREE.PlaneGeometry(wMeters, hMeters)
+      const frontPanel = new THREE.Mesh(frontPanelGeom, printFrontMat)
+      frontPanel.position.set(0, 0, 0.021)
+      boardGroup.add(frontPanel)
+
+      // Back Printed Surface
+      const backPanelGeom = new THREE.PlaneGeometry(wMeters, hMeters)
+      backPanelGeom.rotateY(Math.PI)
+      const backPanel = new THREE.Mesh(backPanelGeom, printBackMat)
+      backPanel.position.set(0, 0, -0.021)
+      boardGroup.add(backPanel)
+
+      signGroup.add(boardGroup)
+    }
+
+    // =========================================================================
+    // 3. LIENZO PVC CON OJALES (Reinforced Vinyl Banner with Corner Ties)
+    // =========================================================================
+    else if (activeSupport === 'pvc') {
+      const bannerCenterY = hMeters / 2 + 0.6
+      targetLookAtRef.current.set(0, bannerCenterY, 0)
+
+      const bannerGroup = new THREE.Group()
+      bannerGroup.position.set(0, bannerCenterY, 0)
+
+      // Main Vinyl Sheet
+      const bannerGeom = new THREE.BoxGeometry(wMeters, hMeters, 0.006)
+      const bannerMaterials = [
+        steelMat,
+        steelMat,
+        steelMat,
+        steelMat,
+        printFrontMat,
+        printBackMat,
+      ]
+      const bannerMesh = new THREE.Mesh(bannerGeom, bannerMaterials)
+      bannerMesh.castShadow = true
+      bannerGroup.add(bannerMesh)
+
+      // Brass Eyelets (Ojales metálicos) around perimeter
+      const eyeletRadius = 0.016
+      const eyeletGeom = new THREE.TorusGeometry(eyeletRadius, 0.005, 8, 20)
+      const eyeletOffsets = [
+        [-wMeters / 2 + 0.04, hMeters / 2 - 0.04],
+        [wMeters / 2 - 0.04, hMeters / 2 - 0.04],
+        [-wMeters / 2 + 0.04, -hMeters / 2 + 0.04],
+        [wMeters / 2 - 0.04, -hMeters / 2 + 0.04],
+        [0, hMeters / 2 - 0.04],
+        [0, -hMeters / 2 + 0.04],
+      ]
+      eyeletOffsets.forEach(([ox, oy]) => {
+        const eyeletMesh = new THREE.Mesh(eyeletGeom, brassHingeMat)
+        eyeletMesh.position.set(ox, oy, 0.004)
+        bannerGroup.add(eyeletMesh)
+      })
+
+      // Hanging Suspension Ropes/Cables
+      const ropeMat = new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.8 })
+      for (const [ox, oy] of [
+        [-wMeters / 2 + 0.04, hMeters / 2 - 0.04],
+        [wMeters / 2 - 0.04, hMeters / 2 - 0.04],
+      ]) {
+        const ropeLength = 0.6
+        const ropeGeom = new THREE.CylinderGeometry(0.004, 0.004, ropeLength, 8)
+        const ropeMesh = new THREE.Mesh(ropeGeom, ropeMat)
+        ropeMesh.position.set(ox * 1.15, oy + ropeLength / 2, 0)
+        ropeMesh.rotation.z = ox < 0 ? -0.2 : 0.2
+        bannerGroup.add(ropeMesh)
+      }
+
+      signGroup.add(bannerGroup)
+    }
+
+    // =========================================================================
+    // 4. PANEL MURAL / ADHESIVO (Wall Mounted Architectural Panel)
+    // =========================================================================
+    else {
+      const panelCenterY = hMeters / 2 + 0.5
+      targetLookAtRef.current.set(0, panelCenterY, 0)
+
+      const wallGroup = new THREE.Group()
+      wallGroup.position.set(0, panelCenterY, 0)
+
+      // Backdrop Wall Segment
+      const wallW = Math.max(wMeters + 1.2, 2.4)
+      const wallH = Math.max(hMeters + 1.0, 2.6)
+      const wallGeom = new THREE.BoxGeometry(wallW, wallH, 0.08)
+      const wallMat = new THREE.MeshStandardMaterial({
+        color: 0xf1f5f9,
+        roughness: 0.85,
+        metalness: 0.05,
+      })
+      const wallMesh = new THREE.Mesh(wallGeom, wallMat)
+      wallMesh.position.set(0, 0, -0.045)
+      wallMesh.receiveShadow = true
+      wallGroup.add(wallMesh)
+
+      // Vinyl / Rigid Board Mounted to Wall
+      const boardGeom = new THREE.BoxGeometry(wMeters, hMeters, 0.01)
+      const boardMaterials = [
+        darkAluminumMat,
+        darkAluminumMat,
+        darkAluminumMat,
+        darkAluminumMat,
+        printFrontMat,
+        darkAluminumMat,
+      ]
+      const boardMesh = new THREE.Mesh(boardGeom, boardMaterials)
+      boardMesh.position.set(0, 0, 0.006)
+      boardMesh.castShadow = true
+      wallGroup.add(boardMesh)
+
+      signGroup.add(wallGroup)
+    }
+  }, [activeSupport, widthCm, heightCm])
+
+  // -------------------------------------------------------------
+  // Initial Scene Setup, WebGL Renderer, Environment & Animation Loop
+  // -------------------------------------------------------------
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+
+    const width = container.clientWidth || 600
+    const height = container.clientHeight || 420
+
+    // 1. Offscreen Canvas for dynamic texture
+    const offCanvas = document.createElement('canvas')
+    offCanvas.width = 1024
+    offCanvas.height = 1024
+    offscreenCanvasRef.current = offCanvas
+
+    const canvasTexture = new THREE.CanvasTexture(offCanvas)
+    canvasTexture.colorSpace = THREE.SRGBColorSpace
+    canvasTexRef.current = canvasTexture
+
+    // 2. Scene
+    const scene = new THREE.Scene()
+    sceneRef.current = scene
+    scene.background = null // Transparent background matching Tailwind container
+
+    // 3. Camera
+    const camera = new THREE.PerspectiveCamera(42, width / height, 0.1, 50)
+    cameraRef.current = camera
+
+    // 4. WebGL Renderer
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
+    renderer.setSize(width, height)
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+    renderer.shadowMap.enabled = true
+    renderer.shadowMap.type = THREE.PCFShadowMap
+    renderer.toneMapping = THREE.ACESFilmicToneMapping
+    renderer.toneMappingExposure = 1.15
+    renderer.outputColorSpace = THREE.SRGBColorSpace
+    rendererRef.current = renderer
+
+    container.appendChild(renderer.domElement)
+
+    // 5. Lighting
+    const hemiLight = new THREE.HemisphereLight(0xffffff, 0xdde3ea, 1.25)
+    scene.add(hemiLight)
+
+    // Main Sunlight (Casting Shadows)
+    const sunLight = new THREE.DirectionalLight(0xfffaed, 2.2)
+    sunLight.position.set(3.5, 7.5, 4.5)
+    sunLight.castShadow = true
+    sunLight.shadow.mapSize.width = 1024
+    sunLight.shadow.mapSize.height = 1024
+    sunLight.shadow.camera.near = 0.5
+    sunLight.shadow.camera.far = 20
+    sunLight.shadow.camera.left = -4
+    sunLight.shadow.camera.right = 4
+    sunLight.shadow.camera.top = 4
+    sunLight.shadow.camera.bottom = -1
+    sunLight.shadow.bias = -0.0004
+    scene.add(sunLight)
+
+    // Secondary Fill Light (Soft sky reflections)
+    const fillLight = new THREE.DirectionalLight(0xb0cce8, 0.75)
+    fillLight.position.set(-4, 4, -3)
+    scene.add(fillLight)
+
+    // 6. Ground Plane (Sidewalk Pavement)
+    const groundGeom = new THREE.CylinderGeometry(4.8, 4.8, 0.1, 48)
+    const groundMat = new THREE.MeshStandardMaterial({
+      color: 0xe8e7e3,
+      roughness: 0.95,
+      metalness: 0.05,
+    })
+    const groundMesh = new THREE.Mesh(groundGeom, groundMat)
+    groundMesh.position.set(0, -0.05, 0)
+    groundMesh.receiveShadow = true
+    scene.add(groundMesh)
+
+    // Sidewalk Grid Pattern Lines
+    const gridHelper = new THREE.GridHelper(8, 16, 0xc4c3bd, 0xd6d5d0)
+    gridHelper.position.set(0, 0.002, 0)
+    scene.add(gridHelper)
+
+    // 7. Environment Group (Tree & Human Figure for Real Scale Reference)
+    const envGroup = new THREE.Group()
+    envGroupRef.current = envGroup
+    scene.add(envGroup)
+
+    // -------------------------------------------------------------
+    // Tree (~3.5m tall real scale) at X = -2.2m
+    // -------------------------------------------------------------
+    const treeGroup = new THREE.Group()
+    treeGroup.position.set(-2.2, 0, -0.3)
+
+    // Tree planter ring at base
+    const planterGeom = new THREE.CylinderGeometry(0.55, 0.6, 0.08, 24)
+    const planterMat = new THREE.MeshStandardMaterial({ color: 0xb5b4ae, roughness: 0.9 })
+    const planterMesh = new THREE.Mesh(planterGeom, planterMat)
+    planterMesh.position.set(0, 0.04, 0)
+    planterMesh.receiveShadow = true
+    treeGroup.add(planterMesh)
+
+    // Mulch soil inside planter
+    const soilGeom = new THREE.CylinderGeometry(0.48, 0.48, 0.02, 24)
+    const soilMat = new THREE.MeshStandardMaterial({ color: 0x3d2b1f, roughness: 1.0 })
+    const soilMesh = new THREE.Mesh(soilGeom, soilMat)
+    soilMesh.position.set(0, 0.081, 0)
+    treeGroup.add(soilMesh)
+
+    // Tree Trunk
+    const trunkGeom = new THREE.CylinderGeometry(0.12, 0.17, 1.8, 12)
+    const trunkMat = new THREE.MeshStandardMaterial({ color: 0x5a3e28, roughness: 0.85 })
+    const trunkMesh = new THREE.Mesh(trunkGeom, trunkMat)
+    trunkMesh.position.set(0, 0.9, 0)
+    trunkMesh.castShadow = true
+    trunkMesh.receiveShadow = true
+    treeGroup.add(trunkMesh)
+
+    // Foliage Canopy Clustered Volumes (~3.5m apex)
+    const foliageMatA = new THREE.MeshStandardMaterial({ color: 0x2e7d32, roughness: 0.8 })
+    const foliageMatB = new THREE.MeshStandardMaterial({ color: 0x388e3c, roughness: 0.8 })
+    const foliageMatC = new THREE.MeshStandardMaterial({ color: 0x43a047, roughness: 0.8 })
+
+    const canopy1 = new THREE.Mesh(new THREE.DodecahedronGeometry(1.0, 1), foliageMatA)
+    canopy1.position.set(0, 2.3, 0)
+    canopy1.castShadow = true
+    treeGroup.add(canopy1)
+
+    const canopy2 = new THREE.Mesh(new THREE.DodecahedronGeometry(0.8, 1), foliageMatB)
+    canopy2.position.set(-0.25, 2.85, 0.15)
+    canopy2.castShadow = true
+    treeGroup.add(canopy2)
+
+    const canopy3 = new THREE.Mesh(new THREE.DodecahedronGeometry(0.75, 1), foliageMatC)
+    canopy3.position.set(0.3, 2.65, -0.2)
+    canopy3.castShadow = true
+    treeGroup.add(canopy3)
+
+    envGroup.add(treeGroup)
+
+    // -------------------------------------------------------------
+    // Human Figure Silhouette (~1.75m tall real scale) at X = +1.8m
+    // -------------------------------------------------------------
+    const personGroup = new THREE.Group()
+    personGroup.position.set(1.8, 0, 0.2)
+    const personMat = new THREE.MeshStandardMaterial({
+      color: 0x334155,
+      roughness: 0.75,
+      metalness: 0.1,
+    })
+
+    // Legs
+    for (const legX of [-0.07, 0.07]) {
+      const legGeom = new THREE.BoxGeometry(0.1, 0.82, 0.12)
+      const legMesh = new THREE.Mesh(legGeom, personMat)
+      legMesh.position.set(legX, 0.41, 0)
+      legMesh.castShadow = true
+      personGroup.add(legMesh)
+    }
+
+    // Torso / Jacket
+    const torsoGeom = new THREE.BoxGeometry(0.36, 0.58, 0.2)
+    const torsoMesh = new THREE.Mesh(torsoGeom, personMat)
+    torsoMesh.position.set(0, 1.11, 0)
+    torsoMesh.castShadow = true
+    personGroup.add(torsoMesh)
+
+    // Arms
+    for (const armX of [-0.22, 0.22]) {
+      const armGeom = new THREE.BoxGeometry(0.08, 0.6, 0.1)
+      const armMesh = new THREE.Mesh(armGeom, personMat)
+      armMesh.position.set(armX, 1.1, 0)
+      armMesh.castShadow = true
+      personGroup.add(armMesh)
+    }
+
+    // Head
+    const headGeom = new THREE.SphereGeometry(0.11, 16, 16)
+    const headMesh = new THREE.Mesh(headGeom, personMat)
+    headMesh.position.set(0, 1.58, 0)
+    headMesh.castShadow = true
+    personGroup.add(headMesh)
+
+    envGroup.add(personGroup)
+
+    // 8. Sign Model Group in the Center (0, 0, 0)
+    const signGroup = new THREE.Group()
+    signGroupRef.current = signGroup
+    scene.add(signGroup)
+
+    // Initial render call for texture
+    renderTextureToCanvas()
+
+    // 9. Resize Handling
+    const handleResize = () => {
+      if (!container || !camera || !renderer) return
+      const w = container.clientWidth
+      const h = container.clientHeight
+      camera.aspect = w / h
+      camera.updateProjectionMatrix()
+      renderer.setSize(w, h)
+    }
+    window.addEventListener('resize', handleResize)
+
+    // 10. Animation Loop
+    let animId: number
+    const animate = () => {
+      animId = requestAnimationFrame(animate)
+
+      // Auto rotation
+      if (autoRotateRef.current) {
+        azimuthRef.current = (azimuthRef.current + 0.007) % (Math.PI * 2)
+      }
+
+      // Update camera position from spherical coordinates orbiting target
+      const target = targetLookAtRef.current
+      const dist = distanceRef.current
+      const az = azimuthRef.current
+      const el = elevationRef.current
+
+      camera.position.x = target.x + dist * Math.cos(el) * Math.sin(az)
+      camera.position.y = target.y + dist * Math.sin(el)
+      camera.position.z = target.z + dist * Math.cos(el) * Math.cos(az)
+      camera.lookAt(target.x, target.y, target.z)
+
+      renderer.render(scene, camera)
+    }
+    animate()
+
+    return () => {
+      window.removeEventListener('resize', handleResize)
+      cancelAnimationFrame(animId)
+      renderer.dispose()
+      if (renderer.domElement.parentNode) {
+        renderer.domElement.parentNode.removeChild(renderer.domElement)
+      }
+    }
+  }, [renderTextureToCanvas])
+
+  // -------------------------------------------------------------
+  // Pointer Orbit & Wheel Zoom Controls
+  // -------------------------------------------------------------
+  const handlePointerDown = (e: React.PointerEvent) => {
+    isDraggingRef.current = true
+    pointerPosRef.current = { x: e.clientX, y: e.clientY }
     setAutoRotate(false)
     ;(e.target as HTMLElement).setPointerCapture?.(e.pointerId)
   }
 
-  const onPointerMove = (e: React.PointerEvent) => {
-    if (!dragging.current) return
-    const dx = e.clientX - lastPos.current.x
-    const dy = e.clientY - lastPos.current.y
-    lastPos.current = { x: e.clientX, y: e.clientY }
-    setRotY((y) => y + dx * 0.5)
-    setRotX((x) => Math.max(-25, Math.min(25, x - dy * 0.35)))
+  const handlePointerMove = (e: React.PointerEvent) => {
+    if (!isDraggingRef.current) return
+    const dx = e.clientX - pointerPosRef.current.x
+    const dy = e.clientY - pointerPosRef.current.y
+    pointerPosRef.current = { x: e.clientX, y: e.clientY }
+
+    azimuthRef.current += dx * 0.007
+    elevationRef.current = Math.max(-0.05, Math.min(1.15, elevationRef.current + dy * 0.005))
   }
 
-  const onPointerUp = (e: React.PointerEvent) => {
-    dragging.current = false
+  const handlePointerUp = (e: React.PointerEvent) => {
+    isDraggingRef.current = false
     ;(e.target as HTMLElement).releasePointerCapture?.(e.pointerId)
   }
 
-  const setView = useCallback((y: number, x: number) => {
+  const handleWheel = (e: React.WheelEvent) => {
+    e.preventDefault()
+    distanceRef.current = Math.max(1.8, Math.min(7.0, distanceRef.current + e.deltaY * 0.003))
+  }
+
+  const setPresetAngle = (view: 'persp' | 'front' | 'side') => {
     setAutoRotate(false)
-    setRotY(y)
-    setRotX(x)
-  }, [])
-
-  // Proportions: target board height is 240px
-  const ratio = widthCm && heightCm ? widthCm / heightCm : 0.45
-  const boxHeight = 240
-  const boxWidth = Math.min(240, Math.max(90, Math.round(boxHeight * ratio)))
-
-  // Image styling with crop offset
-  const imgStyle: React.CSSProperties = imageUrl
-    ? {
-        backgroundImage: `url(${imageUrl})`,
-        backgroundSize: `${crop.zoom * 100}%`,
-        backgroundPosition: `${crop.x * 100}% ${crop.y * 100}%`,
-        backgroundRepeat: 'no-repeat',
-      }
-    : {
-        background: 'linear-gradient(135deg, #18244A 0%, #293863 100%)',
-      }
+    setActivePresetView(view)
+    if (view === 'front') {
+      azimuthRef.current = 0
+      elevationRef.current = 0.08
+    } else if (view === 'persp') {
+      azimuthRef.current = 0.45
+      elevationRef.current = 0.18
+    } else if (view === 'side') {
+      azimuthRef.current = Math.PI / 2
+      elevationRef.current = 0.08
+    }
+  }
 
   return (
     <div className="flex flex-col rounded-2xl border border-[#18244a22] bg-[#18244A06] p-4 sm:p-6 select-none overflow-hidden">
@@ -103,18 +793,18 @@ export function Product3DViewer({
         <div className="flex items-center gap-2">
           <span className="flex h-2.5 w-2.5 rounded-full bg-[#00A9D6] animate-pulse" />
           <h3 className="text-xs font-bold uppercase tracking-[.2em] text-[#18244A]">
-            Maqueta Virtual 3D {title ? `· ${title}` : ''}
+            Maqueta 3D Real (WebGL) {title ? `· ${title}` : ''}
           </h3>
         </div>
 
         {/* Support Type Selector */}
-        <div className="flex items-center gap-1 text-xs bg-white rounded-lg p-1 border border-[#18244a20]">
+        <div className="flex items-center gap-1 text-xs bg-white rounded-lg p-1 border border-[#18244a20] shadow-xs">
           <button
             type="button"
             onClick={() => setActiveSupport('paloma')}
             className={`px-2.5 py-1 rounded font-medium transition ${
               activeSupport === 'paloma'
-                ? 'bg-[#18244A] text-white'
+                ? 'bg-[#18244A] text-white shadow-xs'
                 : 'text-[#667089] hover:text-[#18244A]'
             }`}
           >
@@ -125,7 +815,7 @@ export function Product3DViewer({
             onClick={() => setActiveSupport('poste')}
             className={`px-2.5 py-1 rounded font-medium transition ${
               activeSupport === 'poste'
-                ? 'bg-[#18244A] text-white'
+                ? 'bg-[#18244A] text-white shadow-xs'
                 : 'text-[#667089] hover:text-[#18244A]'
             }`}
           >
@@ -136,7 +826,7 @@ export function Product3DViewer({
             onClick={() => setActiveSupport('pvc')}
             className={`px-2.5 py-1 rounded font-medium transition ${
               activeSupport === 'pvc'
-                ? 'bg-[#18244A] text-white'
+                ? 'bg-[#18244A] text-white shadow-xs'
                 : 'text-[#667089] hover:text-[#18244A]'
             }`}
           >
@@ -147,7 +837,7 @@ export function Product3DViewer({
             onClick={() => setActiveSupport('panel')}
             className={`px-2.5 py-1 rounded font-medium transition ${
               activeSupport === 'panel'
-                ? 'bg-[#18244A] text-white'
+                ? 'bg-[#18244A] text-white shadow-xs'
                 : 'text-[#667089] hover:text-[#18244A]'
             }`}
           >
@@ -156,327 +846,48 @@ export function Product3DViewer({
         </div>
       </div>
 
-      {/* 3D Scene Viewport */}
+      {/* 3D WebGL Canvas Viewport */}
       <div
-        className="relative flex h-[380px] w-full items-center justify-center overflow-hidden cursor-grab active:cursor-grabbing touch-none bg-gradient-to-b from-sky-100/40 via-[#FAFAF7] to-neutral-200/60 rounded-xl mt-3 border border-[#18244a10]"
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
-        style={{ perspective: 1100 }}
+        ref={containerRef}
+        className="relative flex h-[390px] w-full items-center justify-center overflow-hidden cursor-grab active:cursor-grabbing touch-none bg-gradient-to-b from-sky-100/50 via-[#FAFAF7] to-neutral-200/70 rounded-xl mt-3 border border-[#18244a15]"
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
+        onWheel={handleWheel}
       >
-        {/* Sidewalk pavement on the floor with perspective */}
-        <div
-          className="absolute inset-x-0 bottom-0 h-40 pointer-events-none opacity-40 bg-[linear-gradient(to_bottom,transparent_0%,rgba(0,0,0,0.06)_100%),repeating-linear-gradient(90deg,transparent_0px,transparent_40px,rgba(0,0,0,0.04)_40px,rgba(0,0,0,0.04)_41px)]"
-          style={{
-            transformOrigin: 'bottom center',
-            transform: 'rotateX(55deg)',
-          }}
-        />
-
-        {/* Tree and Human Environmental Scale Reference */}
+        {/* Real Scale Visual Labels in 3D Space */}
         {showEnvironment && (
-          <div
-            className="absolute inset-0 pointer-events-none transition-transform duration-100 ease-out"
-            style={{
-              transform: `translateZ(-90px) rotateY(${rotY * 0.15}deg)`,
-            }}
-          >
-            {/* Tree on the left (~3.5m tall real scale) */}
-            <div className="absolute left-[8%] sm:left-[12%] bottom-10 flex flex-col items-center opacity-85">
-              {/* Foliage Canopy */}
-              <div className="relative flex flex-col items-center">
-                <div className="h-24 w-28 sm:h-28 sm:w-32 rounded-full bg-gradient-to-t from-emerald-700 via-emerald-600 to-green-500 shadow-md border border-emerald-800/30" />
-                <div className="absolute -top-3 h-16 w-20 rounded-full bg-gradient-to-t from-emerald-600 to-emerald-400 opacity-90" />
-                <div className="absolute top-4 -right-2 h-14 w-14 rounded-full bg-emerald-700/80" />
-              </div>
-              {/* Trunk */}
-              <div className="w-4 h-24 bg-gradient-to-r from-amber-900 via-amber-800 to-amber-950 rounded-b-xs shadow-inner" />
-              <span className="mt-1 text-[10px] font-bold text-neutral-600 bg-white/80 px-2 py-0.5 rounded-full border border-neutral-300">
-                🌳 Árbol ~3.5m
-              </span>
+          <>
+            <div className="absolute left-6 bottom-4 pointer-events-none flex items-center gap-1.5 text-[11px] font-bold text-neutral-600 bg-white/85 backdrop-blur-xs px-2.5 py-1 rounded-full border border-neutral-300 shadow-xs">
+              <span>🌳</span> Árbol ~3.5m
             </div>
-
-            {/* Person silhouette on the right (~1.75m tall) */}
-            <div className="absolute right-[10%] sm:right-[15%] bottom-10 flex flex-col items-center opacity-70">
-              {/* Head */}
-              <div className="h-5 w-5 rounded-full bg-neutral-600 mb-0.5 shadow-xs" />
-              {/* Body */}
-              <div className="w-8 h-20 bg-neutral-600 rounded-t-lg rounded-b-sm" />
-              {/* Legs */}
-              <div className="flex gap-1.5 mt-0.5">
-                <div className="w-2.5 h-16 bg-neutral-700 rounded-b-xs" />
-                <div className="w-2.5 h-16 bg-neutral-700 rounded-b-xs" />
-              </div>
-              <span className="mt-1 text-[10px] font-bold text-neutral-600 bg-white/80 px-2 py-0.5 rounded-full border border-neutral-300">
-                👤 Persona ~1.75m
-              </span>
+            <div className="absolute right-6 bottom-4 pointer-events-none flex items-center gap-1.5 text-[11px] font-bold text-neutral-600 bg-white/85 backdrop-blur-xs px-2.5 py-1 rounded-full border border-neutral-300 shadow-xs">
+              <span>👤</span> Persona ~1.75m
             </div>
-          </div>
+          </>
         )}
 
-        {/* Dynamic Ground Shadow Plane */}
-        <div
-          className="absolute pointer-events-none rounded-full blur-md opacity-50 transition-transform duration-75"
-          style={{
-            width: boxWidth * 1.6,
-            height: activeSupport === 'paloma' ? 120 : 50,
-            background: 'radial-gradient(ellipse at center, rgba(24,36,74,0.6) 0%, transparent 70%)',
-            transform: `translateY(145px) rotateX(90deg) rotateZ(${-rotY}deg)`,
-          }}
-        />
-
-        {/* 3D Orbit Node */}
-        <div
-          className="relative transition-transform duration-75 ease-out"
-          style={{
-            transformStyle: 'preserve-3d',
-            transform: `rotateX(${rotX}deg) rotateY(${rotY}deg)`,
-          }}
-        >
-          {/* ================= 1. PALOMA CABALLETE EN A (GEOMETRÍA PERFECTA) ================= */}
-          {activeSupport === 'paloma' && (
-            <div
-              className="relative"
-              style={{
-                width: boxWidth,
-                height: boxHeight,
-                transformStyle: 'preserve-3d',
-              }}
-            >
-              {/* Top Hinge Bar at the Apex Line (z=0, y=0) */}
-              <div
-                className="absolute left-0 right-0 -top-2 flex justify-between px-5 z-30 pointer-events-none"
-                style={{
-                  transform: 'translateZ(1px)',
-                }}
-              >
-                <div className="h-3.5 w-6 rounded-sm bg-gradient-to-b from-[#e5c158] via-[#ffd977] to-[#997722] shadow-md border border-[#7a5d16]" />
-                <div className="h-3.5 w-6 rounded-sm bg-gradient-to-b from-[#e5c158] via-[#ffd977] to-[#997722] shadow-md border border-[#7a5d16]" />
-              </div>
-
-              {/* Front Face (Cara A): Inclinada hacia adelante desde la cúspide */}
-              <div
-                className="absolute inset-0 rounded-t-xs shadow-xl flex flex-col justify-between"
-                style={{
-                  transformOrigin: 'top center',
-                  transform: 'rotateX(-12.5deg) translateZ(1px)',
-                  transformStyle: 'preserve-3d',
-                  backgroundColor: '#18244A',
-                  border: '5px solid #231F20',
-                  boxShadow: '0 20px 30px -10px rgba(0,0,0,0.5)',
-                }}
-              >
-                {/* Print area */}
-                <div className="relative w-full h-full overflow-hidden flex items-center justify-center">
-                  <div className="absolute inset-0" style={imgStyle} />
-                  {!imageUrl && (
-                    <div className="z-10 text-center text-white/80 p-4">
-                      <p className="font-bold text-xs tracking-wider">PALOMA PUBLICITARIA</p>
-                      <p className="text-[10px] text-white/60 mt-1">Sube tu diseño para ver la maqueta</p>
-                    </div>
-                  )}
-                  {/* Gloss sheen overlay */}
-                  <div className="absolute inset-0 pointer-events-none bg-gradient-to-tr from-transparent via-white/10 to-transparent" />
-                </div>
-
-                {/* Wooden legs at bottom touching floor */}
-                <div className="absolute -bottom-7 left-0 right-0 flex justify-between px-2 pointer-events-none">
-                  <div className="w-4 h-7 bg-gradient-to-r from-[#8B5A2B] via-[#CD853F] to-[#8B5A2B] border border-[#5c3a1e] rounded-b-xs shadow-sm" />
-                  <div className="w-4 h-7 bg-gradient-to-r from-[#8B5A2B] via-[#CD853F] to-[#8B5A2B] border border-[#5c3a1e] rounded-b-xs shadow-sm" />
-                </div>
-              </div>
-
-              {/* Back Face (Cara B): Inclinada hacia atrás desde la misma cúspide */}
-              <div
-                className="absolute inset-0 rounded-t-xs shadow-xl flex flex-col justify-between"
-                style={{
-                  transformOrigin: 'top center',
-                  transform: 'rotateY(180deg) rotateX(-12.5deg) translateZ(1px)',
-                  transformStyle: 'preserve-3d',
-                  backgroundColor: '#1E293B',
-                  border: '5px solid #231F20',
-                  boxShadow: '0 20px 30px -10px rgba(0,0,0,0.5)',
-                }}
-              >
-                <div className="relative w-full h-full overflow-hidden flex items-center justify-center">
-                  <div className="absolute inset-0" style={imgStyle} />
-                  <div className="absolute inset-0 pointer-events-none bg-gradient-to-tr from-transparent via-white/5 to-transparent" />
-                </div>
-                {/* Back legs */}
-                <div className="absolute -bottom-7 left-0 right-0 flex justify-between px-2 pointer-events-none">
-                  <div className="w-4 h-7 bg-gradient-to-r from-[#8B5A2B] via-[#CD853F] to-[#8B5A2B] border border-[#5c3a1e] rounded-b-xs shadow-sm" />
-                  <div className="w-4 h-7 bg-gradient-to-r from-[#8B5A2B] via-[#CD853F] to-[#8B5A2B] border border-[#5c3a1e] rounded-b-xs shadow-sm" />
-                </div>
-              </div>
-
-              {/* Opening Limiter Chain (Cadenilla lateral visible a media altura) */}
-              <div
-                className="absolute top-[60%] left-1 w-12 h-[2px] bg-neutral-300 opacity-70 pointer-events-none"
-                style={{
-                  transform: 'translateX(-22px) rotateY(90deg)',
-                  boxShadow: '0 0 3px rgba(0,0,0,0.6)',
-                }}
-              />
-            </div>
-          )}
-
-          {/* ================= 2. CARTEL PARA POSTE (CON ABRAZADERAS Y POSTE) ================= */}
-          {activeSupport === 'poste' && (
-            <div
-              className="relative flex items-center justify-center"
-              style={{
-                width: boxWidth + 80,
-                height: 310,
-                transformStyle: 'preserve-3d',
-              }}
-            >
-              {/* Vertical Street Pole (Poste de alumbrado cilíndrico) */}
-              <div
-                className="absolute left-4 top-0 bottom-0 w-8 rounded-full bg-gradient-to-r from-neutral-500 via-neutral-200 to-neutral-600 shadow-xl border border-neutral-400"
-                style={{
-                  transform: 'translateZ(-10px)',
-                }}
-              >
-                {/* Pole concrete texture lines */}
-                <div className="absolute top-12 left-0 right-0 h-[1px] bg-neutral-400/80" />
-                <div className="absolute top-28 left-0 right-0 h-[1px] bg-neutral-400/80" />
-                <div className="absolute bottom-16 left-0 right-0 h-[1px] bg-neutral-400/80" />
-              </div>
-
-              {/* Upper Mounting Bracket / Collarín de Poste */}
-              <div
-                className="absolute left-3 top-16 w-11 h-4 rounded-full border-2 border-neutral-800 bg-gradient-to-r from-neutral-400 via-neutral-100 to-neutral-400 shadow-md z-20 flex items-center justify-end pr-1"
-                style={{ transform: 'translateZ(1px)' }}
-              >
-                <div className="w-1.5 h-1.5 rounded-full bg-neutral-800" />
-              </div>
-              {/* Upper Horizontal Arm */}
-              <div
-                className="absolute left-10 top-[70px] h-2.5 bg-neutral-700 shadow-sm z-10"
-                style={{ width: boxWidth + 8 }}
-              />
-
-              {/* Lower Mounting Bracket */}
-              <div
-                className="absolute left-3 bottom-16 w-11 h-4 rounded-full border-2 border-neutral-800 bg-gradient-to-r from-neutral-400 via-neutral-100 to-neutral-400 shadow-md z-20 flex items-center justify-end pr-1"
-                style={{ transform: 'translateZ(1px)' }}
-              >
-                <div className="w-1.5 h-1.5 rounded-full bg-neutral-800" />
-              </div>
-              {/* Lower Horizontal Arm */}
-              <div
-                className="absolute left-10 bottom-[70px] h-2.5 bg-neutral-700 shadow-sm z-10"
-                style={{ width: boxWidth + 8 }}
-              />
-
-              {/* The Printed Post Sign Board */}
-              <div
-                className="absolute left-14 top-16 shadow-2xl rounded-sm border-4 border-neutral-800 flex items-center justify-center overflow-hidden"
-                style={{
-                  width: boxWidth,
-                  height: boxHeight - 20,
-                  transform: 'translateZ(6px)',
-                  backgroundColor: '#ffffff',
-                }}
-              >
-                <div className="absolute inset-0" style={imgStyle} />
-                {!imageUrl && (
-                  <div className="z-10 text-center text-neutral-800 p-3">
-                    <p className="font-bold text-xs tracking-wider">CARTEL PARA POSTE</p>
-                    <p className="text-[9px] text-neutral-600 mt-1">Con fijación de abrazadera</p>
-                  </div>
-                )}
-                <div className="absolute inset-0 pointer-events-none bg-gradient-to-tr from-transparent via-white/15 to-black/10" />
-              </div>
-            </div>
-          )}
-
-          {/* ================= 3. LONA TELA PVC CON OJALES ================= */}
-          {activeSupport === 'pvc' && (
-            <div
-              className="relative shadow-2xl rounded-xs border-2 border-neutral-300"
-              style={{
-                width: boxWidth,
-                height: boxHeight,
-                backgroundColor: '#ffffff',
-                boxShadow: '0 15px 35px rgba(0,0,0,0.3)',
-              }}
-            >
-              <div className="relative w-full h-full overflow-hidden flex items-center justify-center">
-                <div className="absolute inset-0" style={imgStyle} />
-                {!imageUrl && (
-                  <div className="z-10 text-center text-white/80 p-4">
-                    <p className="font-bold text-xs tracking-wider">LIENZO TELA PVC</p>
-                    <p className="text-[10px] text-white/60 mt-1">Con ojales reforzados</p>
-                  </div>
-                )}
-                <div className="absolute inset-0 pointer-events-none bg-gradient-to-b from-white/10 via-transparent to-black/10" />
-              </div>
-
-              {/* Eyelets */}
-              {[
-                'top-2 left-2',
-                'top-2 right-2',
-                'bottom-2 left-2',
-                'bottom-2 right-2',
-                'top-2 left-1/2 -translate-x-1/2',
-                'bottom-2 left-1/2 -translate-x-1/2',
-              ].map((pos, i) => (
-                <div
-                  key={i}
-                  className={`absolute ${pos} h-3.5 w-3.5 rounded-full border-2 border-[#caa834] bg-neutral-900 shadow-inner flex items-center justify-center`}
-                >
-                  <div className="h-1 w-1 rounded-full bg-white/40" />
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* ================= 4. CARTEL MURAL / ADHESIVO ================= */}
-          {activeSupport === 'panel' && (
-            <div
-              className="relative shadow-2xl rounded-lg border border-white/40"
-              style={{
-                width: boxWidth,
-                height: boxHeight,
-                backgroundColor: '#ffffff',
-                boxShadow: '0 20px 40px -10px rgba(0,0,0,0.35)',
-              }}
-            >
-              <div className="relative w-full h-full overflow-hidden rounded-lg flex items-center justify-center">
-                <div className="absolute inset-0" style={imgStyle} />
-                {!imageUrl && (
-                  <div className="z-10 text-center text-white/80 p-4">
-                    <p className="font-bold text-xs tracking-wider">ADHESIVO / MURAL</p>
-                  </div>
-                )}
-                <div className="absolute inset-0 pointer-events-none bg-gradient-to-tr from-transparent via-white/15 to-transparent" />
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Dimension indicator badge */}
-        <div className="absolute bottom-3 right-3 bg-[#18244A] text-white px-3 py-1.5 rounded-lg text-xs font-mono shadow-md border border-white/20 pointer-events-none">
+        {/* Dimension Badge in Center-Bottom */}
+        <div className="absolute top-3 right-3 bg-[#18244A] text-white px-3 py-1.5 rounded-lg text-xs font-mono shadow-md border border-white/20 pointer-events-none">
           {widthCm} × {heightCm} cm
         </div>
 
-        {/* Drag Hint */}
-        <div className="absolute bottom-3 left-3 flex items-center gap-1.5 text-[11px] text-[#18244A99] pointer-events-none">
-          <span>↺</span> Arrastra para rotar en 3D
+        {/* Interaction Hint */}
+        <div className="absolute top-3 left-3 flex items-center gap-1.5 text-[11px] text-[#18244A99] bg-white/70 backdrop-blur-xs px-2.5 py-1 rounded-md pointer-events-none">
+          <span>↺</span> Arrastra para rotar en 360° · Rueda para zoom
         </div>
       </div>
 
-      {/* Control Buttons */}
+      {/* Bottom Controls Bar */}
       <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-[#18244a15]">
         <div className="flex items-center gap-1 text-xs">
           <span className="text-[#667089] mr-1">Ángulo:</span>
           <button
             type="button"
-            onClick={() => setView(0, 0)}
-            className={`px-2 py-1 rounded border transition ${
-              rotY === 0 && rotX === 0
+            onClick={() => setPresetAngle('front')}
+            className={`px-2.5 py-1 rounded border transition ${
+              activePresetView === 'front'
                 ? 'border-[#00A9D6] bg-[#00A9D615] font-bold text-[#00A9D6]'
                 : 'border-[#18244a20] bg-white text-[#18244A] hover:bg-neutral-100'
             }`}
@@ -485,9 +896,9 @@ export function Product3DViewer({
           </button>
           <button
             type="button"
-            onClick={() => setView(22, -8)}
-            className={`px-2 py-1 rounded border transition ${
-              rotY === 22 && rotX === -8
+            onClick={() => setPresetAngle('persp')}
+            className={`px-2.5 py-1 rounded border transition ${
+              activePresetView === 'persp'
                 ? 'border-[#00A9D6] bg-[#00A9D615] font-bold text-[#00A9D6]'
                 : 'border-[#18244a20] bg-white text-[#18244A] hover:bg-neutral-100'
             }`}
@@ -496,9 +907,9 @@ export function Product3DViewer({
           </button>
           <button
             type="button"
-            onClick={() => setView(75, -4)}
-            className={`px-2 py-1 rounded border transition ${
-              rotY === 75 && rotX === -4
+            onClick={() => setPresetAngle('side')}
+            className={`px-2.5 py-1 rounded border transition ${
+              activePresetView === 'side'
                 ? 'border-[#00A9D6] bg-[#00A9D615] font-bold text-[#00A9D6]'
                 : 'border-[#18244a20] bg-white text-[#18244A] hover:bg-neutral-100'
             }`}
@@ -512,7 +923,7 @@ export function Product3DViewer({
           <button
             type="button"
             onClick={() => setShowEnvironment(!showEnvironment)}
-            className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium border transition ${
+            className={`flex items-center gap-1 px-3 py-1 rounded-full text-xs font-medium border transition ${
               showEnvironment
                 ? 'bg-emerald-100 border-emerald-300 text-emerald-800'
                 : 'bg-white border-neutral-300 text-neutral-600'
@@ -527,7 +938,7 @@ export function Product3DViewer({
             onClick={() => setAutoRotate(!autoRotate)}
             className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold transition ${
               autoRotate
-                ? 'bg-[#EF3785] text-white'
+                ? 'bg-[#EF3785] text-white shadow-xs'
                 : 'border border-[#18244a25] bg-white text-[#18244A] hover:border-[#EF3785]'
             }`}
           >
